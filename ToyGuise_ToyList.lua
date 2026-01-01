@@ -93,7 +93,7 @@ TRANSFORMATION_TOYS = {
     { id = 168014, name = "Banner of the Burning Blade" },
     { id = 198173, name = "Atomic Recalibrator" },               -- random race change
     { id = 205418, name = "Blazing Shadowflame Cinder" },
-    { id = 228914, name = "Arachnoserum" }, 
-    { id = 234950, name = "Atomic Regoblinator" }, 
+    { id = 228705, name = "Arachnoserum" },
+    { id = 234950, name = "Atomic Regoblinator" },
     -- Add more entries here as needed
 }
