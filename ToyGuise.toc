@@ -1,0 +1,17 @@
+## Interface: 110207
+## Title: ToyGuise
+## Notes: This addon will display any toys you own that can change your characters appearance.
+## Author: Roofio
+## Version: 1.0.0
+## SavedVariables: ToyGuiseDB
+## IconTexture: Interface\Icons\inv_misc_toy_04
+## Category: Collections
+
+
+libs\LibStub\LibStub.lua
+libs\CallbackHandler-1.0\CallbackHandler-1.0\CallbackHandler-1.0.lua
+libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+libs\LibDBIcon-1.0\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+ToyGuise_ToyList.lua
+ToyGuise.lua
