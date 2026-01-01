@@ -1,22 +1,22 @@
 -- ToyGuise.lua - Grid of owned transformation/disguise toys! Click to use.
 
 local debug = false -- Set to false to disable debug prints
-local COLUMNS = 8  -- Number of columns in the grid, TODO: Player settable
-local BUTTON_SIZE = 30 -- Size of each toy button, TODO: Player settable
-local BUTTON_SPACING = 10
+local COLUMNS = 8            -- Number of columns in the grid
+local BUTTON_SIZE = 30       -- Size of each toy button
+local BUTTON_SPACING = 10     -- Spacing between buttons
+local MAX_EXPECTED_TOYS = 150  -- :Limit for transformation toys for memory pre-allocation
 
-
---Window frame
+-- Main window frame
 local frame = CreateFrame("Frame", "ToyGuiseFrame", UIParent, "BackdropTemplate")
 frame:SetSize(COLUMNS * (BUTTON_SIZE + BUTTON_SPACING) + 20, 400)
 frame:SetPoint("CENTER")
 frame:SetMovable(true)
 frame:EnableMouse(true)
-frame:SetFrameStrata("DIALOG")
+frame:SetFrameStrata("HIGH")
 frame:SetToplevel(true)
-frame.buttons = {}
+frame.buttons = {}  -- Pool of reusable buttons
 
--- Window frame Backdrop appearance
+-- Backdrop
 frame:SetBackdrop({
     bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
     edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
@@ -25,157 +25,177 @@ frame:SetBackdrop({
 })
 frame:SetBackdropColor(0, 0, 0, 0.8)
 
--- Window Title
+-- Title
 local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 title:SetPoint("TOP", 0, -15)
 title:SetText("ToyGuise")
 
--- Window Draggable
+-- Draggable
 frame:SetScript("OnMouseDown", function(self, button)
     if button == "LeftButton" then self:StartMoving() end
 end)
 frame:SetScript("OnMouseUp", function(self) self:StopMovingOrSizing() end)
 
--- Window Close
+-- Close button
 local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
 close:SetPoint("TOPRIGHT", -5, -5)
 close:SetScript("OnClick", function() frame:Hide() end)
 
+-- Cached toys (no version tracking needed anymore)
+local cachedToys = {}
 
+-- Get owned transformation toys, sorted by name
 local function GetOwnedToysSorted()
-    local ownedToys = {}
-    if debug then print("|cFFFFFF00ToyGuise Debug: Checking owned toys...|r") end
-    
+    -- Always rebuild from our curated list - cheap and reliable
+    wipe(cachedToys)
     for _, toyData in ipairs(TRANSFORMATION_TOYS) do
         local toyID = toyData.id
-        if PlayerHasToy(toyID) then
-            if C_ToyBox.IsToyUsable(toyID) then
-                table.insert(ownedToys, toyData)
-                if debug then print("|cFF00FF00Usable & Owned: " .. toyID .. " (" .. toyData.name .. ")|r") end
+        if PlayerHasToy(toyID) and C_ToyBox.IsToyUsable(toyID) then
+            table.insert(cachedToys, toyData)
+        end
+    end
+    table.sort(cachedToys, function(a, b) return a.name < b.name end)
+    return cachedToys
+end
+
+-- Set up a new button
+local function SetupNewButton(btn)
+    btn:SetSize(BUTTON_SIZE, BUTTON_SIZE)
+
+    -- Icon
+    local icon = btn:CreateTexture(nil, "ARTWORK")
+    icon:SetAllPoints()
+    btn.icon = icon
+
+    -- Cooldown
+    local cd = CreateFrame("Cooldown", nil, btn, "CooldownFrameTemplate")
+    cd:SetAllPoints()
+    cd:SetDrawEdge(false)
+    cd:SetHideCountdownNumbers(false)
+    btn.cd = cd
+
+    -- Secure action
+    btn:SetAttribute("type", "toy")
+
+    -- Tooltip
+    btn:SetScript("OnEnter", function(self)
+        if self.toyID then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetToyByItemID(self.toyID)
+            GameTooltip:Show()
+        end
+    end)
+    btn:SetScript("OnLeave", GameTooltip_Hide)
+end
+
+-- Reset a button to a clean state
+local function ResetButton(btn)
+    btn:ClearAllPoints()
+    btn:Hide()
+    btn:SetAttribute("toy", nil)
+    btn.toyID = nil
+    if btn.icon then btn.icon:SetTexture() end
+    btn.cd:Hide()
+end
+
+-- Update an existing button with new toy data
+local function UpdateButton(btn, toyData)
+    local toyID = toyData.id
+    btn.toyID = toyID
+    btn.icon:SetTexture(C_Item.GetItemIconByID(toyID))
+    btn:SetAttribute("toy", toyID)
+
+    -- Cooldown
+    local start, duration = C_Item.GetItemCooldown(toyID)
+    if duration and duration > 0 then
+        btn.cd:SetCooldown(start, duration)
+        btn.cd:Show()
+    else
+        btn.cd:Hide()
+    end
+end
+
+-- Update only cooldowns
+local function UpdateCooldownsOnly()
+    for _, btn in ipairs(frame.buttons) do
+        if btn.toyID and btn:IsShown() then
+            local start, duration = C_Item.GetItemCooldown(btn.toyID)
+            if duration and duration > 0 then
+                btn.cd:SetCooldown(start, duration)
+                btn.cd:Show()
             else
-                if debug then print("|cFFFF8888Owned but Unusable: " .. toyID .. " (" .. toyData.name .. ") - likely wrong faction|r") end
+                btn.cd:Hide()
             end
         end
     end
-    
-    table.sort(ownedToys, function(a, b)
-        return a.name < b.name
-    end)
-    
-    if debug then print("|cFFFFFF00ToyGuise Debug: Found " .. #ownedToys .. " usable transformation toys.|r") end
-    return ownedToys
 end
 
--- Create/refresh toy buttons in window/frame
-local function CreateToyButtons()
+-- Main refresh function
+local function RefreshToyButtons(fullRefresh)
+    if fullRefresh then
+        local ownedToys = GetOwnedToysSorted()
+        local numToys = #ownedToys
 
-    -- Hide & clear old buttons
-    for _, btn in ipairs(frame.buttons) do
-        btn:Hide()
-        btn:ClearAllPoints()
-    end
-    wipe(frame.buttons)
+        local row, col = 0, 0
+        for i, toyData in ipairs(ownedToys) do
+            local btn = frame.buttons[i]
+            UpdateButton(btn, toyData)
+            btn:SetPoint("TOPLEFT", frame, "TOPLEFT",
+                20 + col * (BUTTON_SIZE + BUTTON_SPACING),
+                -60 - row * (BUTTON_SIZE + BUTTON_SPACING))
+            btn:Show()
 
-    local row, col = 0, 0
-    local usableCount = 0
-
-    local PLAYER_TRANSFORMATION_TOYS = GetOwnedToysSorted()
-
-    for _, toyData in ipairs(PLAYER_TRANSFORMATION_TOYS) do
-        local toyID = toyData.id
-        usableCount = usableCount + 1
-
-        if debug then print("|cFF00FF00Creating button for: " .. toyID .. " (" .. toyData.name .. ")|r") end
-
-        local btn = CreateFrame("Button", nil, frame, "SecureActionButtonTemplate")
-        btn:SetSize(BUTTON_SIZE, BUTTON_SIZE)
-        btn:SetPoint("TOPLEFT", frame, "TOPLEFT", 20 + col * (BUTTON_SIZE + BUTTON_SPACING), -60 - row * (BUTTON_SIZE + BUTTON_SPACING))
-
-        -- Icon
-        local icon = btn:CreateTexture(nil, "ARTWORK")
-        icon:SetAllPoints()
-        icon:SetTexture(C_Item.GetItemIconByID(toyID))
-        btn.icon = icon
-
-        -- Always fully saturated — we only include usable toys
-        icon:SetDesaturated(false)
-
-        -- Cooldown swirl + numbers
-        local cd = CreateFrame("Cooldown", nil, btn, "CooldownFrameTemplate")
-        cd:SetAllPoints()
-        cd:SetDrawEdge(false)
-        cd:SetHideCountdownNumbers(false)
-        btn.cd = cd
-
-        -- Click to use
-        btn:SetAttribute("type", "toy")
-        btn:SetAttribute("toy", toyID)
-
-
-        -- Tooltip
-        btn:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetToyByItemID(toyID)
-            GameTooltip:Show()
-        end)
-        btn:SetScript("OnLeave", GameTooltip_Hide)
-
-        -- Cooldown handling
-        local start, duration = C_Item.GetItemCooldown(toyID)
-        if duration and duration > 0 then
-            cd:SetCooldown(start, duration)
-            cd:Show()
-        else
-            cd:Hide()
+            col = col + 1
+            if col >= COLUMNS then
+                col = 0
+                row = row + 1
+            end
         end
 
-        btn:Show()
-        table.insert(frame.buttons, btn)
-
-        col = col + 1
-        if col >= COLUMNS then
-            col = 0
-            row = row + 1
+        -- Hide excess buttons
+        for i = numToys + 1, #frame.buttons do
+            ResetButton(frame.buttons[i])
         end
+
+        -- Resize frame
+        local rowsNeeded = math.ceil(numToys / COLUMNS)
+        local height = 100 + rowsNeeded * (BUTTON_SIZE + BUTTON_SPACING) + 20
+        frame:SetHeight(height)
+        title:SetText("ToyGuise (" .. numToys .. ")")
+    else
+        UpdateCooldownsOnly()
     end
 
-    -- Resize frame and update title
-    local rowsNeeded = math.ceil(usableCount / COLUMNS)
-    frame:SetHeight(100 + rowsNeeded * (BUTTON_SIZE + BUTTON_SPACING) + 20)
-    title:SetText("ToyGuise (" .. usableCount .. ")")
-
-    if debug then print("|cFFFFFF00ToyGuise: " .. usableCount .. " buttons created!|r") end
+    if debug then print("|cFFFFFF00ToyGuise: " .. (fullRefresh and "Full refresh" or "Cooldown update") .. "|r") end
 end
 
--- Keep OnShow for manual toggles / refreshes
-frame:SetScript("OnShow", CreateToyButtons)
+-- Refresh when shown
+frame:SetScript("OnShow", function() RefreshToyButtons(true) end)
 
-
--- Global event handler - fixes first-load empty grid
+-- Event handler
 local eventFrame = CreateFrame("Frame")
 local addonName = "ToyGuise"
+local needFullRefresh = false
 
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
-        -- SavedVariables are ready
         ToyGuiseDB = ToyGuiseDB or {}
         local db = ToyGuiseDB
         db.minimap = db.minimap or { hide = false }
 
-        -- Setup minimap button (libs already loaded via embeds.xml or TOC)
         local LDB = LibStub("LibDataBroker-1.1")
         local LDBIcon = LibStub("LibDBIcon-1.0")
 
         local minimapButton = LDB:NewDataObject("ToyGuise", {
             type = "launcher",
             label = "ToyGuise",
-            icon = "Interface\\Icons\\inv_misc_toy_04",  -- Change to your custom icon if desired
+            icon = "Interface\\Icons\\inv_misc_toy_04",
             OnClick = function(self, button)
                 if button == "LeftButton" then
-                    if InCombatLockdown() then  
+                    if InCombatLockdown() then
                         print("|cFFFF0000ToyGuise:|r Cannot toggle in combat!")
                         return
                     end
@@ -191,32 +211,49 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
             OnTooltipShow = function(tt)
                 tt:AddLine("ToyGuise", 1, 1, 1)
                 tt:AddLine(" |cFF00FF00Left-Click:|r Toggle toy grid", 1, 1, 1)
-                --tt:AddLine(" |cFFFFAA00Right-Click:|r Hide this button", 1, 1, 1)
             end,
         })
 
         LDBIcon:Register("ToyGuise", minimapButton, db.minimap)
         LDBIcon:Show("ToyGuise")
 
+        -- Pre-allocate button pool
+        for i = 1, MAX_EXPECTED_TOYS do
+            local btn = CreateFrame("Button", nil, frame, "SecureActionButtonTemplate")
+            SetupNewButton(btn)
+            ResetButton(btn)
+            table.insert(frame.buttons, btn)
+        end
+
         self:UnregisterEvent("ADDON_LOADED")
 
     elseif event == "PLAYER_LOGIN" then
-        -- Toy APIs are now reliable
         self:RegisterEvent("TOYS_UPDATED")
         self:RegisterEvent("BAG_UPDATE_COOLDOWN")
+
         if frame:IsShown() then
-            CreateToyButtons()
+            RefreshToyButtons(true)
         end
 
-    elseif event == "TOYS_UPDATED" or event == "BAG_UPDATE_COOLDOWN" then
+    elseif event == "TOYS_UPDATED" then
+        needFullRefresh = true
         if frame:IsShown() then
-            CreateToyButtons()
+            RefreshToyButtons(true)
+        end
+
+    elseif event == "BAG_UPDATE_COOLDOWN" then
+        if frame:IsShown() then
+            if needFullRefresh then
+                RefreshToyButtons(true)
+                needFullRefresh = false
+            else
+                RefreshToyButtons(false)
+            end
         end
     end
 end)
 
-
--- Slash command: toggle + resource check
+-- Slash commands
 SLASH_TOYGUISE1 = "/toyguise"
 SLASH_TOYGUISE2 = "/tg"
 SlashCmdList["TOYGUISE"] = function(msg)
@@ -240,4 +277,5 @@ SlashCmdList["TOYGUISE"] = function(msg)
     end
 end
 
+-- Start hidden
 frame:Hide()
